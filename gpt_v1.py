@@ -5,9 +5,9 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 32   # larger --> more memory, stable gradients, better parallelization
 block_size = 8    # larger --> more context (better for complex syntactic structures), more compute
-max_iters = 10000  # too big gives overfitting, too small gives underfitting (convergence)
+max_iters = 5000  # too big gives overfitting, too small gives underfitting (convergence)
 eval_interval = 500   # frequent evals gives closer monitoring, but can slow down training
-learning_rate = 1e-2  # too big gives divergence (fails to converge), too small gives local minima (AdamW helps)
+learning_rate = 1e-3  # too big gives divergence (fails to converge), too small gives local minima (AdamW helps)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 32 
@@ -58,6 +58,30 @@ def estimate_loss():
   model.train()
   return out
 
+# self-attention 
+class Head(nn.Module):
+    """ one head of self-attention """
+
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B,T,C = x.shape
+        k = self.key(x)   # (B,T,C)
+        q = self.query(x) # (B,T,C)
+        # compute attention scores ("affinities")
+        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        # perform the weighted aggregation of the values
+        v = self.value(x) # (B,T,C)
+        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
+        return out
+
 # model (very simple bigram language model)
 class BigramLanguageModel(nn.Module):
   
@@ -65,14 +89,16 @@ class BigramLanguageModel(nn.Module):
     super().__init__()
     self.token_embedding_table = nn.Embedding(vocab_size, n_embd)       # token embeddings
     self.position_embedding_table = nn.Embedding(block_size, n_embd)    # positional embeddings
+    self.sa_head = Head(n_embd)                                         # self-attention head (for context)
     self.lm_head = nn.Linear(n_embd, vocab_size)                        # linear layer
     
   def forward(self, idx, target=None):
     # idx and targets are both (B,T) tensor of integers
     B,T = idx.shape
     token_emb = self.token_embedding_table(idx)  # (B,T,C)
-    pos_embd = self.position_embedding_table(torch.arange(T), device=device)  # (T,C)
+    pos_embd = self.position_embedding_table(torch.arange(T))  # (T,C)
     x = token_emb + pos_embd   # (B,T,C)
+    x = self.sa_head(x)        # (B,T,C)
     logits = self.lm_head(x)   # (B,T, vocab_size)
     
     if target is None:
@@ -88,7 +114,8 @@ class BigramLanguageModel(nn.Module):
   def generate(self, idx, max_new_tokens):
     # idx is a (B,T) tensor of integers
     for _ in range(max_new_tokens):
-      logits, loss = model(idx)   # (B,T,C)
+      idx_cond = idx[:, -block_size:] 
+      logits, loss = self(idx_cond)   # (B,T,C)
       logits = logits[:, -1, :]   # (B,C)
       probs = F.softmax(logits, dim=-1)   # (B,C)
       next_idx = torch.multinomial(probs, num_samples=1)    # (B,1)
