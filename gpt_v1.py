@@ -10,6 +10,7 @@ eval_interval = 500   # frequent evals gives closer monitoring, but can slow dow
 learning_rate = 1e-2  # too big gives divergence (fails to converge), too small gives local minima (AdamW helps)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
+n_embd = 32 
 
 # data preprocessing
 # !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt 
@@ -60,13 +61,15 @@ def estimate_loss():
 # model (very simple bigram language model)
 class BigramLanguageModel(nn.Module):
   
-  def __init__(self, vocab_size):
+  def __init__(self):
     super().__init__()
-    self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+    self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+    self.lm_head = nn.Linear(n_embd, vocab_size)
     
   def forward(self, idx, target=None):
     # idx and targets are both (B,T) tensor of integers
-    logits = self.token_embedding_table(idx)  # (B,T,C)
+    token_emb = self.token_embedding_table(idx)  # (B,T,C)
+    logits = self.lm_head(token_emb)   # (B,T, vocab_size)
     
     if target is None:
       loss = None
@@ -89,7 +92,7 @@ class BigramLanguageModel(nn.Module):
     return idx
 
 # instantiate model
-model = BigramLanguageModel(vocab_size)
+model = BigramLanguageModel()
 m = model.to(device)
 
 # create optimizer
