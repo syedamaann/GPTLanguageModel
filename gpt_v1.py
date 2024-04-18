@@ -74,17 +74,19 @@ class Head(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
+        # input of size (batch, time-step, channels)
+        # output of size (batch, time-step, head size)
         B,T,C = x.shape
-        k = self.key(x)   # (B,T,C)
-        q = self.query(x) # (B,T,C)
+        k = self.key(x)   # (B,T,hs)
+        q = self.query(x) # (B,T,hs)
         # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
+        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=-1) # (B, T, T)
         wei = self.dropout(wei)   
         # perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,C)
-        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
+        v = self.value(x) # (B,T,hs)
+        out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
         return out
 
 # multi-head attention
@@ -94,7 +96,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(n_embd, n_embd)
+        self.proj = nn.Linear(head_size * num_heads, n_embd)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -136,8 +138,8 @@ class Block(nn.Module):
         x = x + self.ffwd(self.ln2(x))  # computation (feedforward)
         return x
       
-# model (very simple bigram language model)
-class BigramLanguageModel(nn.Module):
+# GPT model
+class GPTLanguageModel(nn.Module):
   
   def __init__(self):
     super().__init__()
@@ -146,12 +148,22 @@ class BigramLanguageModel(nn.Module):
     self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
     self.ln_f = nn.LayerNorm(n_embd) # final layer norm
     self.lm_head = nn.Linear(n_embd, vocab_size)                        # linear layer
+    self.apply(self._init_weights)
+
+  # initialize weights
+  def _init_weights(self, module):
+    if isinstance(module, nn.Linear):
+      torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+      if module.bias is not None:
+        torch.nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding):
+      torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
     
   def forward(self, idx, target=None):
     # idx and targets are both (B,T) tensor of integers
     B,T = idx.shape
     token_emb = self.token_embedding_table(idx)  # (B,T,C)
-    pos_embd = self.position_embedding_table(torch.arange(T))  # (T,C)
+    pos_embd = self.position_embedding_table(torch.arange(T).to(device))  # (T,C)
     x = token_emb + pos_embd    # (B,T,C)
     x = self.blocks(x)          # (B,T,C)
     x = self.ln_f(x)            # (B,T,C)
@@ -179,7 +191,7 @@ class BigramLanguageModel(nn.Module):
     return idx
 
 # instantiate model
-model = BigramLanguageModel()
+model = GPTLanguageModel()
 m = model.to(device)
 
 # print the number of parameters in the model
