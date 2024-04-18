@@ -111,7 +111,7 @@ class FeedFoward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-# transformer block (communication followed by computation)
+# transformer block (communication followed by computation, communication means self attention and computation means feedforward layer)
 class Block(nn.Module):
     """ Transformer block: communication followed by computation """
 
@@ -121,10 +121,12 @@ class Block(nn.Module):
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
         self.ffwd = FeedFoward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd) 
+        self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x):
-        x = x + self.sa(x)
-        x = x + self.ffwd(x)
+        x = x + self.sa(self.ln1(x))    # communication (self-attention)
+        x = x + self.ffwd(self.ln2(x))  # computation (feedforward)
         return x
       
 # model (very simple bigram language model)
@@ -138,6 +140,7 @@ class BigramLanguageModel(nn.Module):
       Block(n_embd, n_head=4),
       Block(n_embd, n_head=4),
       Block(n_embd, n_head=4),
+      nn.LayerNorm(n_embd),
     )
     self.lm_head = nn.Linear(n_embd, vocab_size)                        # linear layer
     
