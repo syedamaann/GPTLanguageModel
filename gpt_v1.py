@@ -3,14 +3,17 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 32   # larger --> more memory, stable gradients, better parallelization
-block_size = 8    # larger --> more context (better for complex syntactic structures), more compute
+batch_size = 64   # larger --> more memory, stable gradients, better parallelization
+block_size = 256    # larger --> more context (better for complex syntactic structures), more compute
 max_iters = 5000  # too big gives overfitting, too small gives underfitting (convergence)
 eval_interval = 500   # frequent evals gives closer monitoring, but can slow down training
-learning_rate = 1e-3  # too big gives divergence (fails to converge), too small gives local minima (AdamW helps)
+learning_rate = 3e-4  # too big gives divergence (fails to converge), too small gives local minima (AdamW helps)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 32 
+n_embd = 384
+n_head = 6
+n_layer = 6
+dropout = 0.2
 
 # data preprocessing
 # !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt 
@@ -68,6 +71,7 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B,T,C = x.shape
@@ -77,6 +81,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=-1) # (B, T, T)
+        wei = self.dropout(wei)   
         # perform the weighted aggregation of the values
         v = self.value(x) # (B,T,C)
         out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
@@ -90,10 +95,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.proj(out)
+        out = self.dropout(self.proj(out))
         return out
 
 # feedforward layer
@@ -106,6 +112,7 @@ class FeedFoward(nn.Module):
             nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
             nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
@@ -136,12 +143,8 @@ class BigramLanguageModel(nn.Module):
     super().__init__()
     self.token_embedding_table = nn.Embedding(vocab_size, n_embd)       # token embeddings
     self.position_embedding_table = nn.Embedding(block_size, n_embd)    # positional embeddings
-    self.blocks = nn.Sequential(
-      Block(n_embd, n_head=4),
-      Block(n_embd, n_head=4),
-      Block(n_embd, n_head=4),
-      nn.LayerNorm(n_embd),
-    )
+    self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
+    self.ln_f = nn.LayerNorm(n_embd) # final layer norm
     self.lm_head = nn.Linear(n_embd, vocab_size)                        # linear layer
     
   def forward(self, idx, target=None):
@@ -151,6 +154,7 @@ class BigramLanguageModel(nn.Module):
     pos_embd = self.position_embedding_table(torch.arange(T))  # (T,C)
     x = token_emb + pos_embd    # (B,T,C)
     x = self.blocks(x)          # (B,T,C)
+    x = self.ln_f(x)            # (B,T,C)
     logits = self.lm_head(x)    # (B,T, vocab_size)
     
     if target is None:
@@ -178,6 +182,9 @@ class BigramLanguageModel(nn.Module):
 model = BigramLanguageModel()
 m = model.to(device)
 
+# print the number of parameters in the model
+print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+
 # create optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)    
 
@@ -197,3 +204,4 @@ for iter in range(max_iters):
 # generate from the model
 context = torch.zeros(1, 1, dtype=torch.long).to(device)
 print(decode(m.generate(context, 1000)[0].tolist()))
+# open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
