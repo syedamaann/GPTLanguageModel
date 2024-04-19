@@ -13,7 +13,7 @@ eval_iters = 200
 n_embd = 384
 n_head = 6
 n_layer = 6
-dropout = 0.2
+dropout = 0.3
 
 # data preprocessing
 # !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt 
@@ -61,48 +61,41 @@ def estimate_loss():
   model.train()
   return out
 
-# self-attention 
-class Head(nn.Module):
-    """ one head of self-attention """
-
-    def __init__(self, head_size):
+class ParallelMultiHeadAttention(nn.Module):
+    def __init__(self, n_embd, n_head):
         super().__init__()
-        self.key = nn.Linear(n_embd, head_size, bias=False)
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        head_size = n_embd // n_head
+        self.n_head = n_head
+        self.head_size = head_size
+        self.key_query_value = nn.Linear(n_embd, 3 * head_size * n_head, bias=False)
+        self.proj = nn.Linear(head_size * n_head, n_embd)
         self.dropout = nn.Dropout(dropout)
+        # Register buffer for the triangular mask
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)).unsqueeze(0).unsqueeze(0))
 
     def forward(self, x):
-        # input of size (batch, time-step, channels)
-        # output of size (batch, time-step, head size)
-        B,T,C = x.shape
-        k = self.key(x)   # (B,T,hs)
-        q = self.query(x) # (B,T,hs)
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
-        wei = self.dropout(wei)   
-        # perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,hs)
-        out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
+        B, T, C = x.shape
+        qkv = self.key_query_value(x)
+        q, k, v = qkv.split(self.head_size * self.n_head, dim=2)
+        q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+
+        # Compute attention scores ("affinities")
+        att = (q @ k.transpose(-2, -1)) * (self.head_size ** -0.5)
+        # Apply the mask, making sure to expand it to cover all heads and batch size
+        att = att.masked_fill(self.tril[:, :, :T, :T] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        att = self.dropout(att)
+
+        # Perform the weighted aggregation of the values
+        out = att @ v
+        out = out.transpose(1, 2).contiguous().view(B, T, self.n_head * self.head_size)
+
+        # Final projection
+        out = self.proj(out)
         return out
 
-# multi-head attention
-class MultiHeadAttention(nn.Module):
-    """ multiple heads of self-attention in parallel """
-
-    def __init__(self, num_heads, head_size):
-        super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(head_size * num_heads, n_embd)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
-        return out
 
 # feedforward layer
 class FeedFoward(nn.Module):
@@ -120,15 +113,12 @@ class FeedFoward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-# transformer block (communication followed by computation, communication means self attention and computation means feedforward layer)
 class Block(nn.Module):
     """ Transformer block: communication followed by computation """
 
     def __init__(self, n_embd, n_head):
-        # n_embd: embedding dimension, n_head: the number of heads we'd like
         super().__init__()
-        head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size)
+        self.sa = ParallelMultiHeadAttention(n_embd, n_head)
         self.ffwd = FeedFoward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd) 
         self.ln2 = nn.LayerNorm(n_embd)
@@ -198,7 +188,7 @@ m = model.to(device)
 print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
 # create optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)    
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)    
 
 # training loop
 for iter in range(max_iters):
