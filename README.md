@@ -1,4 +1,4 @@
-### Generative Pre-trained Transformer 
+# Generative Pre-trained Transformer 
 
 ## Model Description
 
