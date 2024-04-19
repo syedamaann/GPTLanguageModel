@@ -41,4 +41,4 @@ Contributions to this project are welcome. You can propose changes by creating a
 
 ## Acknowledgments
 
-This project is inspired by Andrej Karpathy's youtube playlist on deep learning and language models. The gradual improvements and implementations reflect a practical approach to learning and applying modern techniques in neural networks and natural language processing.
+This project is inspired by Andrej Karpathy's youtube playlist on neural networks
