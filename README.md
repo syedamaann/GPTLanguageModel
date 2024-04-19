@@ -1,7 +1,5 @@
 # Generative Pre-trained Transformer 
 
-## Model Description
-
 The `GPTLanguageModel` leverages a transformer-based architecture, known for its effectiveness in capturing long-range dependencies within data. **Check the Gitlog to track the gradual improvements on the Model**. Key components of the model include:
 
 - **Token and Positional Embeddings**: Converts input tokens into dense vectors that retain positional information.
