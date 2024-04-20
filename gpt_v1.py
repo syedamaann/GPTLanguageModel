@@ -16,7 +16,7 @@ n_layer = 6
 dropout = 0.3
 
 # data preprocessing
-# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt 
+# !wget https://raw.githubusercontent.com/syedamaann/GPTLanguageModel/main/input.txt
 
 torch.manual_seed(1337)
 
